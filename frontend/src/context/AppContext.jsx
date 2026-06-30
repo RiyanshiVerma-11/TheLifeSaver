@@ -2,7 +2,7 @@ import React, { createContext, useState, useEffect, useContext, useRef } from 'r
 
 const AppContext = createContext();
 
-const API_BASE = '/api';
+export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 export const AppProvider = ({ children }) => {
   const [activeTab, setActiveTab] = useState('dashboard');

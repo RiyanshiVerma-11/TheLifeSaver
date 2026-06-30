@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useApp } from '../context/AppContext';
+import { useApp, API_BASE } from '../context/AppContext';
 import { BarChart2, ShieldAlert, Coffee, Settings, Calendar, Award, CheckCircle, Brain, TrendingUp } from 'lucide-react';
 
 const AnalyticsHub = () => {
@@ -12,7 +12,7 @@ const AnalyticsHub = () => {
 
   // Fetch AI memory data on mount to show self-improvement loop
   useEffect(() => {
-    fetch('/api/ai/memory')
+    fetch(`${API_BASE}/ai/memory`)
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data) setAiMemory(data); })
       .catch(() => {});
