@@ -31,6 +31,7 @@ const Dashboard = () => {
     setActiveTab,
     agentActivities,
     syncGoogleCalendar,
+    connectGoogleAccount,
     userSettings,
     healthStats,
     toggleSubtask,
@@ -128,7 +129,7 @@ const Dashboard = () => {
         </div>
         {!userSettings.google_account_connected && !demoScenario && (
           <button 
-            onClick={syncGoogleCalendar} 
+            onClick={connectGoogleAccount} 
             className="btn btn-accent btn-xs glow-pulse-hover"
             style={{ fontSize: '0.75rem', padding: '0.2rem 0.6rem' }}
           >

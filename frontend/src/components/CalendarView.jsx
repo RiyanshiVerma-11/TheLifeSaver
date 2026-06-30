@@ -17,6 +17,7 @@ const CalendarView = () => {
     updateCalendarEvent,
     deleteCalendarEvent,
     syncGoogleCalendar,
+    connectGoogleAccount,
     userSettings
   } = useApp();
 
@@ -171,9 +172,18 @@ const CalendarView = () => {
 
       {/* Connection notification */}
       {!userSettings.google_account_connected && (
-        <div className="connection-alert-box glass-card animate-slide-in">
-          <CalendarDays size={16} className="text-yellow animate-pulse" />
-          <span>Currently in **Sandbox mode**. Any events added below will simulate Google Calendar entries to test collision avoidance.</span>
+        <div className="connection-alert-box glass-card animate-slide-in" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <CalendarDays size={16} className="text-yellow animate-pulse" />
+            <span>Currently in **Sandbox mode**. Any events added below will simulate Google Calendar entries to test collision avoidance.</span>
+          </div>
+          <button 
+            onClick={connectGoogleAccount} 
+            className="btn btn-accent btn-xs glow-pulse-hover" 
+            style={{ fontSize: '0.75rem', padding: '0.2rem 0.6rem', marginLeft: '1rem' }}
+          >
+            Connect Real Google Calendar
+          </button>
         </div>
       )}
 

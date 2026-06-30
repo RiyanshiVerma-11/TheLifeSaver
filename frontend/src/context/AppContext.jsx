@@ -540,6 +540,24 @@ export const AppProvider = ({ children }) => {
     }
   };
 
+  const connectGoogleAccount = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/oauth/google/login`);
+      if (!res.ok) {
+        throw new Error(`Server returned status ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.status === 'redirect' && data.authorization_url) {
+        window.location.href = data.authorization_url;
+      } else {
+        showToast(data.message || "Google OAuth is not configured.");
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("❌ Failed to initialize Google Connection.");
+    }
+  };
+
   const syncGoogleCalendar = async () => {
     setIsLoading(true);
     try {
@@ -906,6 +924,7 @@ export const AppProvider = ({ children }) => {
       updateCalendarEvent,
       deleteCalendarEvent,
       syncGoogleCalendar,
+      connectGoogleAccount,
       analyticsData,
       healthStats,
       demoLoginMode,
