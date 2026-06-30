@@ -48,6 +48,7 @@ class Task(Base):
     ai_reasoning = Column(String, nullable=True)
     rescue_timeline = Column(String, default="[]")  # JSON encoded list of timeline slots
     actual_hours_spent = Column(Float, default=0.0)
+    gcal_event_id = Column(String, nullable=True)
 
     # Relationships
     subtasks = relationship("SubTask", back_populates="task", cascade="all, delete-orphan", lazy="joined")
@@ -139,6 +140,7 @@ class UserSettings(Base):
     daily_focus_target = Column(Float, default=4.0)
     google_account_connected = Column(Boolean, default=False)
     google_refresh_token_id = Column(String, nullable=True)
+    google_oauth_code_verifier = Column(String, nullable=True)
     start_work_hour = Column(Integer, default=9)
     end_work_hour = Column(Integer, default=18)
 

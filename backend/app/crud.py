@@ -122,6 +122,18 @@ def update_task(db: Session, task_id: int, task_update: schemas.TaskUpdate):
 def delete_task(db: Session, task_id: int):
     db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
     if db_task:
+        # Delete from Google Calendar if connected
+        user_settings = db.query(models.UserSettings).first()
+        refresh_token = user_settings.google_refresh_token_id if user_settings else None
+        if refresh_token and db_task.gcal_event_id:
+            try:
+                from app.google_services import GoogleCalendarClient
+                gcal_client = GoogleCalendarClient(refresh_token)
+                if gcal_client.is_connected():
+                    gcal_client.delete_event(db_task.gcal_event_id)
+            except Exception as e:
+                print(f"Error deleting task event from Google Calendar: {e}")
+
         db.delete(db_task)
         db.commit()
         return True
@@ -256,3 +268,59 @@ def log_focus_time(db: Session, task_id: int, minutes: float) -> models.Task:
         db.commit()
         db.refresh(db_task)
     return db_task
+
+
+def sync_task_to_google_calendar(db: Session, db_task: models.Task):
+    """
+    Syncs a task's deadline to the user's Google Calendar as an event.
+    If it was already synced, updates the event. If not, creates it.
+    """
+    user_settings = db.query(models.UserSettings).first()
+    refresh_token = user_settings.google_refresh_token_id if user_settings else None
+    if not refresh_token:
+        return
+
+    try:
+        from app.google_services import GoogleCalendarClient
+        gcal_client = GoogleCalendarClient(refresh_token)
+        if gcal_client.is_connected():
+            summary = f"{'🟢 Completed: ' if db_task.status == models.StatusEnum.COMPLETED else '🔴 Deadline: '}{db_task.title}"
+            
+            # Format description nicely with details
+            desc_parts = [
+                "Last-Minute Life Saver Task",
+                f"Category: {db_task.category}",
+                f"Priority: {db_task.priority.value}",
+                f"Status: {db_task.status.value}"
+            ]
+            if db_task.description:
+                desc_parts.append(f"Description: {db_task.description}")
+            if db_task.rescue_strategy:
+                desc_parts.append(f"AI Rescue Strategy: {db_task.rescue_strategy}")
+            if db_task.critical_next_action:
+                desc_parts.append(f"AI Critical Next Action: {db_task.critical_next_action}")
+            
+            description = "\n".join(desc_parts)
+            
+            start_time = (db_task.due_date - datetime.timedelta(minutes=30)).isoformat() + "Z"
+            end_time = db_task.due_date.isoformat() + "Z"
+            
+            if db_task.gcal_event_id:
+                success = gcal_client.update_event(
+                    db_task.gcal_event_id,
+                    summary,
+                    start_time,
+                    end_time,
+                    description
+                )
+                if not success:
+                    # If update failed (e.g. event deleted on Google), recreate it
+                    gcal_id = gcal_client.create_event(summary, start_time, end_time, description)
+                    db_task.gcal_event_id = gcal_id
+                    db.commit()
+            else:
+                gcal_id = gcal_client.create_event(summary, start_time, end_time, description)
+                db_task.gcal_event_id = gcal_id
+                db.commit()
+    except Exception as e:
+        print(f"Error syncing task to Google Calendar: {e}")

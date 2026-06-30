@@ -8,13 +8,14 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from app import models
 from app.database import get_db
+from app.config import settings
 from app.google_services import is_google_oauth_configured, get_oauth_flow
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
 
 @router.get("/google/login")
-def google_oauth_login():
+def google_oauth_login(db: Session = Depends(get_db)):
     """
     Generates a Google OAuth2 consent URL and redirects the user.
     If credentials are not configured, returns info about standalone mode.
@@ -35,6 +36,14 @@ def google_oauth_login():
         include_granted_scopes='true',
         prompt='consent'
     )
+
+    # Store verifier in UserSettings
+    settings_rec = db.query(models.UserSettings).first()
+    if not settings_rec:
+        settings_rec = models.UserSettings()
+        db.add(settings_rec)
+    settings_rec.google_oauth_code_verifier = flow.code_verifier
+    db.commit()
 
     return {
         "status": "redirect",
@@ -62,12 +71,16 @@ async def google_oauth_callback(code: str = None, error: str = None, db: Session
     if not flow:
         raise HTTPException(status_code=500, detail="Failed to initialize OAuth flow")
 
+    settings_rec = db.query(models.UserSettings).first()
+    code_verifier = settings_rec.google_oauth_code_verifier if settings_rec else None
+    if code_verifier:
+        flow.code_verifier = code_verifier
+
     try:
         flow.fetch_token(code=code)
         credentials = flow.credentials
 
         # Store refresh token in UserSettings
-        settings_rec = db.query(models.UserSettings).first()
         if not settings_rec:
             settings_rec = models.UserSettings()
             db.add(settings_rec)
@@ -84,11 +97,12 @@ async def google_oauth_callback(code: str = None, error: str = None, db: Session
             db
         )
 
-        return {
-            "status": "success",
-            "message": "Google account connected successfully. Calendar sync and Gmail drafts are now active.",
-            "google_account_connected": True
-        }
+        # Redirect back to the frontend instead of showing raw JSON
+        frontend_url = "https://the-life-saver.vercel.app/"
+        if "localhost" in settings.GOOGLE_REDIRECT_URI:
+            frontend_url = "http://localhost:3000/"
+
+        return RedirectResponse(url=frontend_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Token exchange failed: {str(e)}")
 

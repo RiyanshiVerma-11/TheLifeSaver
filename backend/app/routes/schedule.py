@@ -92,17 +92,18 @@ async def sync_google_calendar(db: Session = Depends(get_db)):
                 time_max = (now + datetime.timedelta(days=7)).isoformat()
 
                 google_events = client.get_events(time_min, time_max)
+                synced_from_google = True
 
                 # Filter out our own LMLS focus blocks
                 google_events = [ev for ev in google_events if 'LMLS' not in ev.get('description', '')]
 
-                if google_events:
-                    # Clear old external events and replace with fresh Google data
-                    db.query(models.CalendarEvent).filter(
-                        models.CalendarEvent.source == "Google Calendar"
-                    ).delete()
-                    db.commit()
+                # Clear old external events and replace with fresh Google data
+                db.query(models.CalendarEvent).filter(
+                    models.CalendarEvent.source == "Google Calendar"
+                ).delete()
+                db.commit()
 
+                if google_events:
                     for ev in google_events:
                         db_event = models.CalendarEvent(
                             title=ev["title"],
@@ -113,13 +114,20 @@ async def sync_google_calendar(db: Session = Depends(get_db)):
                         )
                         db.add(db_event)
                     db.commit()
-                    synced_from_google = True
                     logger.info(f"Synced {len(google_events)} events from Google Calendar API.")
 
                     from app.agents import AgentLogger
                     await AgentLogger.log_activity(
                         "Google Calendar Sync",
                         f"Live sync: Imported {len(google_events)} events from Google Calendar API.",
+                        db
+                    )
+                else:
+                    logger.info("Synced successfully, but no events found on Google Calendar.")
+                    from app.agents import AgentLogger
+                    await AgentLogger.log_activity(
+                        "Google Calendar Sync",
+                        "Live sync: Connected successfully, but no external events found for the next 7 days.",
                         db
                     )
         except Exception as e:
@@ -151,7 +159,7 @@ async def sync_google_calendar(db: Session = Depends(get_db)):
         
     # Mark account connected
     if settings_rec:
-        settings_rec.google_account_connected = True
+        settings_rec.google_account_connected = synced_from_google
         db.commit()
 
     # Replan schedule using event bus

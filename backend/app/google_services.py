@@ -49,6 +49,7 @@ def get_oauth_flow() -> Optional[Any]:
         client_config,
         scopes=[
             "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/gmail.compose",
         ],
         redirect_uri=settings.GOOGLE_REDIRECT_URI
@@ -167,6 +168,33 @@ class GoogleCalendarClient:
             return True
         except Exception as e:
             logger.error(f"Error deleting Google Calendar event {event_id}: {e}")
+            return False
+
+    def update_event(self, event_id: str, summary: str, start_time: str, end_time: str, description: str) -> bool:
+        """
+        Updates an existing event in the user's primary Google Calendar.
+        """
+        if not self.is_connected() or not event_id:
+            return False
+
+        try:
+            service = build('calendar', 'v3', credentials=self.credentials, cache_discovery=False)
+            event_body = {
+                'summary': summary,
+                'start': {
+                    'dateTime': start_time,
+                    'timeZone': 'UTC',
+                },
+                'end': {
+                    'dateTime': end_time,
+                    'timeZone': 'UTC',
+                },
+                'description': description
+            }
+            service.events().update(calendarId='primary', eventId=event_id, body=event_body).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating Google Calendar event {event_id}: {e}")
             return False
 
 

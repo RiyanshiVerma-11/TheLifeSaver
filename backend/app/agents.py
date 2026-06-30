@@ -92,6 +92,11 @@ class MultiAgentOrchestrator:
             # Refresh task state
             if task:
                 db.refresh(task)
+                try:
+                    from app.crud import sync_task_to_google_calendar
+                    sync_task_to_google_calendar(db, task)
+                except Exception as gcal_err:
+                    logger.error(f"Error syncing task to Google Calendar at end of pipeline: {gcal_err}")
             
             await AgentLogger.log_activity("Orchestrator", "Multi-Agent pipeline executed successfully.", db)
         except Exception as e:

@@ -123,6 +123,7 @@ class UserSettingsBase(BaseModel):
     daily_focus_target: float = 4.0
     google_account_connected: bool = False
     google_refresh_token_id: Optional[str] = None
+    google_oauth_code_verifier: Optional[str] = None
     start_work_hour: int = 9
     end_work_hour: int = 18
 
@@ -132,6 +133,7 @@ class UserSettingsUpdate(BaseModel):
     daily_focus_target: Optional[float] = None
     google_account_connected: Optional[bool] = None
     google_refresh_token_id: Optional[str] = None
+    google_oauth_code_verifier: Optional[str] = None
     start_work_hour: Optional[int] = None
     end_work_hour: Optional[int] = None
 
@@ -165,6 +167,7 @@ class TaskBase(BaseModel):
     impact: Optional[str] = "Medium"
     reward: Optional[str] = None
     loss_if_skipped: Optional[str] = None
+    gcal_event_id: Optional[str] = None
 
 class TaskCreate(TaskBase):
     subtasks: Optional[List[SubTaskCreate]] = []
@@ -186,6 +189,7 @@ class TaskUpdate(BaseModel):
     ai_reasoning: Optional[str] = None
     rescue_timeline: Optional[str] = None
     actual_hours_spent: Optional[float] = None
+    gcal_event_id: Optional[str] = None
 
 class Task(TaskBase):
     id: int

@@ -567,15 +567,18 @@ export const AppProvider = ({ children }) => {
       if (!res.ok) {
         throw new Error(`Server returned status ${res.status}`);
       }
-      await fetchCalendarEvents();
+      const data = await res.json();
+      setCalendarEvents(data);
       await fetchSchedule();
       await fetchTasks();
       await fetchUserSettings();
       await fetchAgentActivities();
       triggerBrowserNotification("Google Calendar Synced", "Conflicts resolved, and focus blocks mapped successfully.");
+      return data;
     } catch (err) {
       console.error(err);
       showToast("❌ Failed to sync Google Calendar.");
+      throw err;
     } finally {
       setIsLoading(false);
     }

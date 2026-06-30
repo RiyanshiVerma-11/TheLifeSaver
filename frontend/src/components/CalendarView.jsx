@@ -42,23 +42,26 @@ const CalendarView = () => {
   };
 
   const handleSyncClick = async () => {
-    // Perform standard sync trigger first — this updates calendarEvents in context
-    await syncGoogleCalendar();
-    
-    // After sync, populate the editable copy from the calendarEvents state (external events only)
-    // calendarEvents is up-to-date since syncGoogleCalendar awaits fetchCalendarEvents internally
-    const externalEvents = calendarEvents.filter(e => e.is_external || e.source === "Google Calendar");
-    setEventsToEdit(externalEvents.map(e => ({
-      id: e.id,
-      title: e.title,
-      start_time: formatDateTimeForInput(e.start_time),
-      end_time: formatDateTimeForInput(e.end_time),
-      source: e.source || "Google Calendar",
-      is_external: true
-    })));
-    
-    // Open the modal
-    setShowSyncModal(true);
+    try {
+      // Perform standard sync trigger first — this updates calendarEvents in context
+      const freshEvents = await syncGoogleCalendar();
+      
+      // After sync, populate the editable copy from the fresh return data (external events only)
+      const externalEvents = freshEvents.filter(e => e.is_external || e.source === "Google Calendar");
+      setEventsToEdit(externalEvents.map(e => ({
+        id: e.id,
+        title: e.title,
+        start_time: formatDateTimeForInput(e.start_time),
+        end_time: formatDateTimeForInput(e.end_time),
+        source: e.source || "Google Calendar",
+        is_external: true
+      })));
+      
+      // Open the modal
+      setShowSyncModal(true);
+    } catch (err) {
+      console.error("Failed to sync Google Calendar: ", err);
+    }
   };
 
   const handleEventChange = (index, field, value) => {

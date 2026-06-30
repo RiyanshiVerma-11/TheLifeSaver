@@ -32,6 +32,9 @@ if "tasks" in tables:
         if "impact" not in task_columns:
             print("⚠️ Adding impact to tasks table...")
             conn.execute(text("ALTER TABLE tasks ADD COLUMN impact VARCHAR DEFAULT 'Medium'"))
+        if "gcal_event_id" not in task_columns:
+            print("⚠️ Adding gcal_event_id to tasks table...")
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN gcal_event_id VARCHAR"))
 
 if "user_settings" in tables:
     settings_columns = [col["name"] for col in inspector.get_columns("user_settings")]
@@ -39,6 +42,9 @@ if "user_settings" in tables:
         if "start_work_hour" not in settings_columns:
             print("⚠️ Adding start_work_hour to user_settings table...")
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN start_work_hour INTEGER DEFAULT 9"))
+        if "google_oauth_code_verifier" not in settings_columns:
+            print("⚠️ Adding google_oauth_code_verifier to user_settings table...")
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN google_oauth_code_verifier VARCHAR"))
 
 if "schedule_blocks" in tables:
     blocks_columns = [col["name"] for col in inspector.get_columns("schedule_blocks")]
