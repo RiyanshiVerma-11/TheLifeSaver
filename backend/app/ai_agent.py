@@ -137,10 +137,15 @@ async def call_llm_structured(system_prompt: str, user_prompt: str, response_sch
                 "Authorization": f"Bearer {settings.GROQ_API_KEY}",
                 "Content-Type": "application/json"
             }
+            # Groq requires 'json' to be in the messages when response_format is json_object
+            groq_system_prompt = system_prompt
+            if "json" not in groq_system_prompt.lower():
+                groq_system_prompt += "\n\nReturn the response in JSON format."
+
             payload = {
                 "model": "llama-3.3-70b-versatile",
                 "messages": [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": groq_system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.2,
@@ -200,10 +205,14 @@ async def call_llm(system_prompt: str, user_prompt: str, json_mode: bool = False
                 "Authorization": f"Bearer {settings.GROQ_API_KEY}",
                 "Content-Type": "application/json"
             }
+            groq_system_prompt = system_prompt
+            if json_mode and "json" not in groq_system_prompt.lower():
+                groq_system_prompt += "\n\nReturn response in JSON format."
+
             payload = {
                 "model": "llama-3.3-70b-versatile",
                 "messages": [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": groq_system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.2
