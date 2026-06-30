@@ -1,5 +1,7 @@
 # The Last-Minute Life Saver (LMLS) 🚨⏰
 
+### 🌐 Live Deployed Application: [the-life-saver.vercel.app](https://the-life-saver.vercel.app/)
+
 > **Unlike traditional reminder apps, LMLS continuously predicts failure before it happens, autonomously replans schedules, coordinates multiple AI agents, and proactively intervenes until the user successfully completes the task or reaches the best possible outcome.**
 
 **The Last-Minute Life Saver (LMLS)** is a high-fidelity, AI-powered productivity companion designed to save students, professionals, and entrepreneurs from missing deadlines. Unlike passive reminder apps that are easily ignored, LMLS actively intervenes by running a continuous multi-agent pipeline triggered by database changes and background timers.
