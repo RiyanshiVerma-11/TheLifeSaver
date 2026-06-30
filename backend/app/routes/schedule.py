@@ -93,6 +93,9 @@ async def sync_google_calendar(db: Session = Depends(get_db)):
 
                 google_events = client.get_events(time_min, time_max)
 
+                # Filter out our own LMLS focus blocks
+                google_events = [ev for ev in google_events if 'LMLS' not in ev.get('description', '')]
+
                 if google_events:
                     # Clear old external events and replace with fresh Google data
                     db.query(models.CalendarEvent).filter(

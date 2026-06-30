@@ -261,12 +261,26 @@ class SchedulerAgent:
         if not tasks:
             return
 
-        # Clear old focus blocks
+        # Clear old focus blocks and remove from Google Calendar if connected
+        old_blocks = db.query(models.ScheduleBlock).all()
+        user_settings = db.query(models.UserSettings).first()
+        refresh_token = user_settings.google_refresh_token_id if user_settings else None
+
+        if refresh_token:
+            try:
+                from app.google_services import GoogleCalendarClient
+                gcal_client = GoogleCalendarClient(refresh_token)
+                if gcal_client.is_connected():
+                    for ob in old_blocks:
+                        if ob.gcal_event_id:
+                            gcal_client.delete_event(ob.gcal_event_id)
+            except Exception as e:
+                logger.error(f"Error cleaning up old Google Calendar events: {e}")
+
         db.query(models.ScheduleBlock).delete()
         db.commit()
 
         # Retrieve user configured work hours from settings (default to 9 AM to 6 PM)
-        user_settings = db.query(models.UserSettings).first()
         start_hour = user_settings.start_work_hour if user_settings else 9
         end_hour = user_settings.end_work_hour if user_settings else 18
 
@@ -330,12 +344,27 @@ class SchedulerAgent:
                     )
                     continue
 
-                # Add focus block
+                # Add focus block to Google Calendar if connected
+                gcal_id = None
+                if refresh_token:
+                    try:
+                        from app.google_services import GoogleCalendarClient
+                        gcal_client = GoogleCalendarClient(refresh_token)
+                        if gcal_client.is_connected():
+                            start_iso = current_time.isoformat() + "Z"
+                            end_iso = (current_time + timedelta(minutes=focus_minutes)).isoformat() + "Z"
+                            summary = f"Focus Block: {task.title}"
+                            description = "AI Scheduled Pomodoro Focus Block created by LMLS"
+                            gcal_id = gcal_client.create_event(summary, start_iso, end_iso, description)
+                    except Exception as e:
+                        logger.error(f"Error creating Google Calendar event for focus block: {e}")
+
                 db_block = models.ScheduleBlock(
                     task_id=task.id,
                     start_time=current_time,
                     end_time=current_time + timedelta(minutes=focus_minutes),
-                    is_focus_block=True
+                    is_focus_block=True,
+                    gcal_event_id=gcal_id
                 )
                 db.add(db_block)
                 current_time += timedelta(minutes=block_total_mins)

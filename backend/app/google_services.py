@@ -117,12 +117,57 @@ class GoogleCalendarClient:
                     "start_time": start.get('dateTime', start.get('date', '')),
                     "end_time": end.get('dateTime', end.get('date', '')),
                     "source": "Google Calendar",
-                    "is_external": True
+                    "is_external": True,
+                    "description": item.get('description', '')
                 })
             return events
         except Exception as e:
             logger.error(f"Error fetching Google Calendar events: {e}")
             return []
+
+    def create_event(self, summary: str, start_time: str, end_time: str, description: str) -> Optional[str]:
+        """
+        Creates a new event in the user's primary Google Calendar.
+        Returns the created event ID or None.
+        """
+        if not self.is_connected():
+            return None
+
+        try:
+            service = build('calendar', 'v3', credentials=self.credentials, cache_discovery=False)
+            event_body = {
+                'summary': summary,
+                'start': {
+                    'dateTime': start_time,
+                    'timeZone': 'UTC',
+                },
+                'end': {
+                    'dateTime': end_time,
+                    'timeZone': 'UTC',
+                },
+                'description': description
+            }
+
+            event = service.events().insert(calendarId='primary', body=event_body).execute()
+            return event.get('id')
+        except Exception as e:
+            logger.error(f"Error creating Google Calendar event: {e}")
+            return None
+
+    def delete_event(self, event_id: str) -> bool:
+        """
+        Deletes an event from the user's Google Calendar.
+        """
+        if not self.is_connected():
+            return False
+
+        try:
+            service = build('calendar', 'v3', credentials=self.credentials, cache_discovery=False)
+            service.events().delete(calendarId='primary', eventId=event_id).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting Google Calendar event {event_id}: {e}")
+            return False
 
 
 # ──────────────────────────────────────────────────────────────

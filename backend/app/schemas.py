@@ -25,6 +25,7 @@ class ScheduleBlockBase(BaseModel):
     start_time: datetime
     end_time: datetime
     is_focus_block: bool = False
+    gcal_event_id: Optional[str] = None
 
 class ScheduleBlockCreate(ScheduleBlockBase):
     task_id: int

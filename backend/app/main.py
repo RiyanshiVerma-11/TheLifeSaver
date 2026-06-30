@@ -40,6 +40,13 @@ if "user_settings" in tables:
             print("⚠️ Adding start_work_hour to user_settings table...")
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN start_work_hour INTEGER DEFAULT 9"))
 
+if "schedule_blocks" in tables:
+    blocks_columns = [col["name"] for col in inspector.get_columns("schedule_blocks")]
+    with engine.begin() as conn:
+        if "gcal_event_id" not in blocks_columns:
+            print("⚠️ Adding gcal_event_id to schedule_blocks table...")
+            conn.execute(text("ALTER TABLE schedule_blocks ADD COLUMN gcal_event_id VARCHAR"))
+
 Base.metadata.create_all(bind=engine)
 
 # Seed default settings and configs

@@ -75,6 +75,7 @@ class ScheduleBlock(Base):
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=False)
     is_focus_block = Column(Boolean, default=False)
+    gcal_event_id = Column(String, nullable=True)
 
     # Relationships
     task = relationship("Task", back_populates="schedule_blocks")
