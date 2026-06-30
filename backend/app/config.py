@@ -7,6 +7,11 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     PORT: int = 8000
 
+    # Google OAuth & Workspace Integration
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/oauth/google/callback"
+
     class Config:
         env_file = ".env"
         extra = "ignore"

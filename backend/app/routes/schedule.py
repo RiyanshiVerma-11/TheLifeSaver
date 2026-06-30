@@ -68,34 +68,83 @@ async def auto_plan_schedule(db: Session = Depends(get_db)):
 @router.post("/sync-google-calendar", response_model=List[schemas.CalendarEvent])
 async def sync_google_calendar(db: Session = Depends(get_db)):
     """
-    Simulates / performs Google Calendar synchronization.
-    Pulls external events into local sqlite and replans focus schedules.
+    Hybrid Google Calendar synchronization.
+    Mode 1 (Live): If real Google OAuth is connected, fetches events from Google Calendar API.
+    Mode 2 (Simulation): Falls back to mock calendar events for demonstration.
     """
-    # 1. Fetch current settings to check if connected
+    import logging
+    logger = logging.getLogger(__name__)
+
     settings_rec = db.query(models.UserSettings).first()
-    
-    # 2. Add realistic mock calendar events if none exist, to simulate connection
-    existing_events = db.query(models.CalendarEvent).all()
-    if not existing_events:
-        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-        mock_events = [
-            models.CalendarEvent(
-                title="Weekly Synch meeting with manager",
-                start_time=datetime.datetime.combine(tomorrow, datetime.time(10, 0)),
-                end_time=datetime.datetime.combine(tomorrow, datetime.time(11, 0)),
-                source="Google Calendar",
-                is_external=True
-            ),
-            models.CalendarEvent(
-                title="Product Architecture Brainstorming",
-                start_time=datetime.datetime.combine(tomorrow, datetime.time(14, 0)),
-                end_time=datetime.datetime.combine(tomorrow, datetime.time(15, 30)),
-                source="Google Calendar",
-                is_external=True
-            )
-        ]
-        db.add_all(mock_events)
-        db.commit()
+    refresh_token = settings_rec.google_refresh_token_id if settings_rec else None
+    synced_from_google = False
+
+    # --- MODE 1: Real Google Calendar API ---
+    if refresh_token:
+        try:
+            from app.google_services import GoogleCalendarClient
+            client = GoogleCalendarClient(refresh_token)
+
+            if client.is_connected():
+                # Fetch events for the next 7 days
+                now = datetime.datetime.now(datetime.timezone.utc)
+                time_min = now.isoformat()
+                time_max = (now + datetime.timedelta(days=7)).isoformat()
+
+                google_events = client.get_events(time_min, time_max)
+
+                if google_events:
+                    # Clear old external events and replace with fresh Google data
+                    db.query(models.CalendarEvent).filter(
+                        models.CalendarEvent.source == "Google Calendar"
+                    ).delete()
+                    db.commit()
+
+                    for ev in google_events:
+                        db_event = models.CalendarEvent(
+                            title=ev["title"],
+                            start_time=datetime.datetime.fromisoformat(ev["start_time"].replace("Z", "+00:00")).replace(tzinfo=None),
+                            end_time=datetime.datetime.fromisoformat(ev["end_time"].replace("Z", "+00:00")).replace(tzinfo=None),
+                            source="Google Calendar",
+                            is_external=True
+                        )
+                        db.add(db_event)
+                    db.commit()
+                    synced_from_google = True
+                    logger.info(f"Synced {len(google_events)} events from Google Calendar API.")
+
+                    from app.agents import AgentLogger
+                    await AgentLogger.log_activity(
+                        "Google Calendar Sync",
+                        f"Live sync: Imported {len(google_events)} events from Google Calendar API.",
+                        db
+                    )
+        except Exception as e:
+            logger.error(f"Google Calendar live sync failed, falling back to simulation: {e}")
+
+    # --- MODE 2: Simulation Fallback ---
+    if not synced_from_google:
+        existing_events = db.query(models.CalendarEvent).all()
+        if not existing_events:
+            tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+            mock_events = [
+                models.CalendarEvent(
+                    title="Weekly Synch meeting with manager",
+                    start_time=datetime.datetime.combine(tomorrow, datetime.time(10, 0)),
+                    end_time=datetime.datetime.combine(tomorrow, datetime.time(11, 0)),
+                    source="Google Calendar",
+                    is_external=True
+                ),
+                models.CalendarEvent(
+                    title="Product Architecture Brainstorming",
+                    start_time=datetime.datetime.combine(tomorrow, datetime.time(14, 0)),
+                    end_time=datetime.datetime.combine(tomorrow, datetime.time(15, 30)),
+                    source="Google Calendar",
+                    is_external=True
+                )
+            ]
+            db.add_all(mock_events)
+            db.commit()
         
     # Mark account connected
     if settings_rec:
@@ -122,4 +171,3 @@ async def update_calendar_event(event_id: int, event: schemas.CalendarEventCreat
     # Replan schedule
     await EventBus.publish_event("calendar_event_added", {}, db)
     return db_event
-

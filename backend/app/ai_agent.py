@@ -6,6 +6,7 @@ import re
 from typing import List, Optional, Dict, Any
 import httpx
 import google.generativeai as genai
+from pydantic import BaseModel, Field
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -14,9 +15,74 @@ logger = logging.getLogger(__name__)
 if settings.GEMINI_API_KEY:
     genai.configure(api_key=settings.GEMINI_API_KEY)
 
+
+# ──────────────────────────────────────────────────────────────
+# STRUCTURED OUTPUT SCHEMAS (Gemini native response_schema)
+# ──────────────────────────────────────────────────────────────
+
+class AISubtask(BaseModel):
+    """Schema for a single subtask returned by the Planner / Decomposer agent."""
+    title: str = Field(description="Actionable subtask description")
+    estimated_minutes: int = Field(description="Duration estimate in minutes")
+
+class TaskDecompositionResponse(BaseModel):
+    """Schema for task decomposition output."""
+    subtasks: List[AISubtask] = Field(description="List of 3-5 sequential subtasks")
+
+class AIRescueResponse(BaseModel):
+    """Schema for the Rescue Agent recovery plan."""
+    rescue_strategy: str = Field(description="Strategic advice to prune scope and save deadline")
+    critical_next_action: str = Field(description="The single next vital step to execute immediately")
+    timeline: List[Dict[str, str]] = Field(description="Chronological milestones with keys 'time' and 'title'")
+
+class AINegotiationResponse(BaseModel):
+    """Schema for the Negotiation Agent email draft."""
+    recipient: str = Field(description="Email recipient address")
+    subject: str = Field(description="Email subject line")
+    body: str = Field(description="Email body text")
+
+class AIChatResponse(BaseModel):
+    """Schema for the Chat Command Center responses."""
+    response: str = Field(description="Conversational reply to the user")
+    action_suggested: Optional[str] = Field(default=None, description="'create_task', 'rescue_task', 'suggest_schedule', or null")
+    parsed_data: Optional[Dict[str, Any]] = Field(default=None, description="Extracted fields for the action")
+
+class AIPrioritizationReasoning(BaseModel):
+    """Schema for Prioritization Agent LLM reasoning."""
+    ai_reasoning: str = Field(description="Explanation of why this task was prioritized over competing tasks")
+    loss_if_skipped: str = Field(description="Consequence of postponing this task")
+    reward: str = Field(description="Benefit of completing this task on time")
+
+class AISchedulerInsight(BaseModel):
+    """Schema for Scheduler Agent LLM insights."""
+    scheduling_insight: str = Field(description="Summary of the scheduling plan and any conflicts detected")
+
+class AIPredictionNarrative(BaseModel):
+    """Schema for AI Prediction Engine LLM narrative."""
+    prediction_narrative: str = Field(description="Natural language explanation of risk factors and completion probability")
+
+class AIRiskAssessment(BaseModel):
+    """Schema for Risk Detector LLM assessment."""
+    risk_assessment: str = Field(description="Narrative explaining why this task is at critical/warning/safe risk level")
+
+class AIMotivationMessage(BaseModel):
+    """Schema for Motivation Agent LLM messages."""
+    message: str = Field(description="Personalized, empathetic motivational message for the user")
+
+class AIReflectionInsight(BaseModel):
+    """Schema for Reflection Agent LLM insights."""
+    insight: str = Field(description="Analysis of the user's work pattern and suggestions for improvement")
+    adjusted_multiplier_suggestion: float = Field(description="Suggested procrastination multiplier between 0.8 and 2.0")
+
+
+# ──────────────────────────────────────────────────────────────
+# CORE LLM CALL FUNCTIONS
+# ──────────────────────────────────────────────────────────────
+
 def clean_json_text(text: str) -> str:
     """
     Cleans markdown wrappers and non-JSON prefixes/suffixes from the LLM output.
+    Used only for Groq fallback path which doesn't support native structured outputs.
     """
     text = text.strip()
 
@@ -33,16 +99,78 @@ def clean_json_text(text: str) -> str:
     return text
 
 
+async def call_llm_structured(system_prompt: str, user_prompt: str, response_schema: type) -> Any:
+    """
+    Structured LLM call using Gemini's native response_schema.
+    Returns a parsed Python dict/list conforming to the schema.
+    Falls back to Groq with manual parsing, then to heuristic.
+    """
+    # 1. Try Gemini with native Structured Outputs (PRIMARY — Google Technologies)
+    if settings.GEMINI_API_KEY:
+        try:
+            generation_config = genai.GenerationConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema=response_schema
+            )
+
+            model = genai.GenerativeModel(
+                model_name='gemini-2.5-flash',
+                system_instruction=system_prompt,
+                generation_config=generation_config
+            )
+
+            response = await asyncio.to_thread(
+                model.generate_content,
+                user_prompt
+            )
+            # Gemini guarantees schema conformance — parse directly
+            return json.loads(response.text)
+        except Exception as e:
+            logger.error(f"Gemini structured call failed: {str(e)}")
+
+    # 2. Groq fallback (manual JSON parsing)
+    if settings.GROQ_API_KEY:
+        try:
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"}
+            }
+
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(url, headers=headers, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    raw = data["choices"][0]["message"]["content"]
+                    cleaned = clean_json_text(raw)
+                    return json.loads(cleaned)
+                else:
+                    logger.error(f"Groq API error ({response.status_code}): {response.text}")
+        except Exception as e:
+            logger.error(f"Groq structured fallback failed: {str(e)}")
+
+    # 3. Return None — caller handles heuristic fallback
+    return None
+
+
 async def call_llm(system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
     """
-    Unified LLM call routing.
+    Unified LLM call routing for plain-text or JSON responses.
     Priority: Google Gemini (primary) -> Groq (fallback) -> heuristic fallback.
-    Gemini is primary to maximise Google Technologies evaluation criterion.
     """
     # 1. Try Gemini API (PRIMARY — Google Technologies)
     if settings.GEMINI_API_KEY:
         try:
-            # Use gemini-1.5-flash for speed
             generation_config = genai.GenerationConfig(temperature=0.2)
             if json_mode:
                 generation_config = genai.GenerationConfig(
@@ -52,11 +180,10 @@ async def call_llm(system_prompt: str, user_prompt: str, json_mode: bool = False
 
             model = genai.GenerativeModel(
                 model_name='gemini-2.5-flash',
-                system_instruction=system_prompt,  # Use proper system_instruction param
+                system_instruction=system_prompt,
                 generation_config=generation_config
             )
 
-            # Wrap synchronous call in asyncio.to_thread to make it non-blocking
             response = await asyncio.to_thread(
                 model.generate_content,
                 user_prompt
@@ -161,16 +288,30 @@ def get_heuristic_fallback(system_prompt: str, user_prompt: str, json_mode: bool
         return "I've analyzed your productivity status. To maximize efficiency, try breaking down your upcoming high-panic tasks and setting up a dedicated Pomodoro focus timer."
 
 
-# External facing APIs
+# ──────────────────────────────────────────────────────────────
+# EXTERNAL FACING APIs (used by routes)
+# ──────────────────────────────────────────────────────────────
+
 async def decompose_task_ai(title: str, description: str) -> List[Dict[str, Any]]:
     system_prompt = (
         "You are an expert AI task breakdown agent. Your goal is to split a complex task into a set of 3 to 5 smaller, "
-        "completely actionable, sequential sub-tasks. You MUST return ONLY a JSON array of objects, where each object has: "
-        "'title' (string describing the sub-task) and 'estimated_minutes' (integer duration estimate, e.g. 15, 30, 45, 60). "
-        "Do not write markdown formatting, just pure JSON."
+        "completely actionable, sequential sub-tasks. Each sub-task should have a clear title and a realistic duration estimate."
     )
     user_prompt = f"Decompose this task:\nTitle: {title}\nDescription: {description}"
 
+    # Try structured output first
+    result = await call_llm_structured(system_prompt, user_prompt, TaskDecompositionResponse)
+    if result and "subtasks" in result:
+        formatted = []
+        for i, sub in enumerate(result["subtasks"]):
+            formatted.append({
+                "title": sub.get("title", f"Action Item {i+1}"),
+                "estimated_minutes": int(sub.get("estimated_minutes", 30)),
+                "order": i
+            })
+        return formatted
+
+    # Fallback: try legacy call_llm
     subtasks = []
     try:
         response_text = await call_llm(system_prompt, user_prompt, json_mode=True)
@@ -228,6 +369,16 @@ async def process_chat_message(
 
     user_prompt = f"History:\n{history_context}{task_context_block}\nUser: {message}"
 
+    # Try structured output first
+    result = await call_llm_structured(system_prompt, user_prompt, AIChatResponse)
+    if result:
+        return {
+            "response": result.get("response", "I've processed your message."),
+            "action_suggested": result.get("action_suggested"),
+            "parsed_data": result.get("parsed_data")
+        }
+
+    # Fallback: legacy call
     try:
         response_text = await call_llm(system_prompt, user_prompt, json_mode=True)
         cleaned_text = clean_json_text(response_text)
@@ -255,7 +406,6 @@ async def generate_behavioral_recommendations(
     """
     Generates dynamic productivity insights/tips.
     """
-    # FIXED: system_prompt and user_prompt are now correctly separated
     system_prompt = (
         "You are an elite productivity coach. Based on the user's weekly metrics, "
         "generate 2 to 3 highly tailored, positive, actionable recommendations. "

@@ -5,7 +5,12 @@ from datetime import timedelta, timezone
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from app import models, schemas
-from app.ai_agent import call_llm, clean_json_text
+from app.ai_agent import (
+    call_llm, call_llm_structured, clean_json_text,
+    AIPrioritizationReasoning, AISchedulerInsight,
+    AIPredictionNarrative, AIRiskAssessment, AIMotivationMessage,
+    AIReflectionInsight, AIRescueResponse, AINegotiationResponse
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,26 +63,21 @@ class MultiAgentOrchestrator:
             if event_type == "task_created" and task:
                 await PlannerAgent.run(task, db)
 
-            # 2. Prioritization Agent
-            # Updates Panic Index and Opportunity Cost Trade-offs
+            # 2. Prioritization Agent (LLM-enhanced reasoning)
             await PrioritizationAgent.run(db)
 
-            # 3. Scheduler Agent
-            # Blocks focus Pomodoros, handles Google Calendar conflict avoidance
+            # 3. Scheduler Agent (LLM scheduling insights)
             await SchedulerAgent.run(db)
 
-            # 4. AI Prediction & Risk Forecasting Engine
-            # Calculates probability of completion
+            # 4. AI Prediction & Risk Forecasting Engine (LLM prediction narrative)
             if task:
                 await AIPredictionEngine.run(task, db)
             else:
-                # Update for all active tasks
                 active_tasks = db.query(models.Task).filter(models.Task.status != models.StatusEnum.COMPLETED).all()
                 for t in active_tasks:
                     await AIPredictionEngine.run(t, db)
 
-            # 5. Risk Detector Agent
-            # Classifies risk state and triggers rescues / negotiations
+            # 5. Risk Detector Agent (LLM risk assessment)
             if task:
                 await RiskDetector.run(task, db)
             else:
@@ -85,8 +85,7 @@ class MultiAgentOrchestrator:
                 for t in active_tasks:
                     await RiskDetector.run(t, db)
 
-            # 6. Reflection Agent
-            # Executes when a task is completed to update AI Memory
+            # 6. Reflection Agent (LLM completion insights)
             if event_type == "task_completed" and task:
                 await ReflectionAgent.run(task, db)
 
@@ -100,7 +99,7 @@ class MultiAgentOrchestrator:
             await AgentLogger.log_activity("Orchestrator", f"Pipeline encountered error: {str(e)[:100]}", db)
 
 
-# --- 1. PLANNER AGENT ---
+# --- 1. PLANNER AGENT (LLM-powered task decomposition) ---
 class PlannerAgent:
     @staticmethod
     async def run(task: models.Task, db: Session):
@@ -109,16 +108,25 @@ class PlannerAgent:
         if not task.subtasks:
             system_prompt = (
                 "You are an expert AI task planner. Break down the user's task into 3 to 5 actionable subtasks. "
-                "Output ONLY a JSON list of objects containing 'title' and 'estimated_minutes' (integer)."
+                "Each subtask must have a clear title and estimated_minutes (integer)."
             )
             user_prompt = f"Task: {task.title}\nDescription: {task.description or ''}"
             
             try:
-                res = await call_llm(system_prompt, user_prompt, json_mode=True)
-                cleaned = clean_json_text(res)
-                subtasks = json.loads(cleaned)
+                # Try Gemini Structured Outputs first
+                from app.ai_agent import TaskDecompositionResponse
+                result = await call_llm_structured(system_prompt, user_prompt, TaskDecompositionResponse)
                 
-                for i, sub in enumerate(subtasks):
+                subtasks_data = []
+                if result and "subtasks" in result:
+                    subtasks_data = result["subtasks"]
+                else:
+                    # Fallback to legacy call
+                    res = await call_llm(system_prompt, user_prompt, json_mode=True)
+                    cleaned = clean_json_text(res)
+                    subtasks_data = json.loads(cleaned)
+
+                for i, sub in enumerate(subtasks_data):
                     db_sub = models.SubTask(
                         task_id=task.id,
                         title=sub.get("title", f"Subtask {i+1}"),
@@ -128,7 +136,7 @@ class PlannerAgent:
                     )
                     db.add(db_sub)
                 db.commit()
-                await AgentLogger.log_activity("Planner Agent", f"Generated {len(subtasks)} checklists for '{task.title}'", db)
+                await AgentLogger.log_activity("Planner Agent", f"Generated {len(subtasks_data)} AI checklists for '{task.title}'", db)
             except Exception as e:
                 logger.error(f"Planner Agent error: {e}")
                 # Fallback heuristics
@@ -150,7 +158,7 @@ class PlannerAgent:
                 await AgentLogger.log_activity("Planner Agent", f"Applied fallback checklist breakdown for '{task.title}'", db)
 
 
-# --- 2. PRIORITIZATION AGENT ---
+# --- 2. PRIORITIZATION AGENT (LLM-enhanced AI reasoning) ---
 class PrioritizationAgent:
     @staticmethod
     async def run(db: Session):
@@ -159,7 +167,7 @@ class PrioritizationAgent:
         tasks = db.query(models.Task).filter(models.Task.status != models.StatusEnum.COMPLETED).all()
         now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
-        # Update panic indices first
+        # Update panic indices first (algorithmic core — always runs)
         for task in tasks:
             due_date = task.due_date
             if due_date.tzinfo is not None:
@@ -180,31 +188,55 @@ class PrioritizationAgent:
                 task.panic_index = min(10.0 + abs(hours_left) * 0.1, 20.0)
                 task.status = models.StatusEnum.OVERDUE
             else:
-                # Clamp to max 20.0 to prevent division by near-zero producing garbage values
                 task.panic_index = round(min((task.estimated_hours / max(hours_left, 0.1)) * mult, 20.0), 3)
             
         db.commit()
 
-        # Perform Opportunity Cost reasoning for active tasks
+        # Sort by panic index for opportunity cost analysis
         active_tasks = sorted(tasks, key=lambda t: t.panic_index, reverse=True)
+
+        # LLM-enhanced reasoning for top tasks
         if len(active_tasks) > 1:
             for idx, task in enumerate(active_tasks):
                 next_tasks = active_tasks[idx+1:]
-                if next_tasks:
-                    competing = next_tasks[0]
-                    task.impact = "High" if task.priority in [models.PriorityEnum.URGENT, models.PriorityEnum.HIGH] else "Medium"
-                    task.reward = f"Complete critical deliverable '{task.title}' and maintain progress streak."
-                    task.loss_if_skipped = f"Delaying this will force '{competing.title}' to slide, increasing stress probability."
-                    task.ai_reasoning = (
-                        f"Prioritized '{task.title}' (Panic Score: {task.panic_index}) over '{competing.title}' "
-                        f"(Panic Score: {competing.panic_index}) based on remaining time vs estimated effort. "
-                        f"Postponing this will reduce success probability of subsequent tasks."
+                competing = next_tasks[0] if next_tasks else None
+                
+                # Set defaults first (algorithmic fallback)
+                task.impact = "High" if task.priority in [models.PriorityEnum.URGENT, models.PriorityEnum.HIGH] else "Medium"
+                
+                # Call LLM for dynamic reasoning
+                try:
+                    competing_ctx = f"Competing task: '{competing.title}' (Panic: {competing.panic_index})" if competing else "No competing tasks."
+                    system_prompt = (
+                        "You are the Prioritization Agent in a productivity system. Explain concisely why this task should be prioritized, "
+                        "what the user loses if they skip it, and what reward they gain by completing it on time. "
+                        "Be specific, quantitative, and motivating. Keep each field under 2 sentences."
                     )
-                else:
-                    task.impact = "Medium"
-                    task.reward = f"Complete standard deliverable '{task.title}'."
-                    task.loss_if_skipped = "Slight delay in timeline padding."
-                    task.ai_reasoning = f"This task stands alone in the timeline backlog; scheduling for immediate focus."
+                    user_prompt = (
+                        f"Task: '{task.title}' (Category: {task.category}, Priority: {task.priority.value}, "
+                        f"Panic Score: {task.panic_index}, Hours Estimated: {task.estimated_hours}h)\n"
+                        f"{competing_ctx}"
+                    )
+
+                    result = await call_llm_structured(system_prompt, user_prompt, AIPrioritizationReasoning)
+                    if result:
+                        task.ai_reasoning = result.get("ai_reasoning", task.ai_reasoning)
+                        task.loss_if_skipped = result.get("loss_if_skipped", task.loss_if_skipped)
+                        task.reward = result.get("reward", task.reward)
+                    else:
+                        # Heuristic fallback
+                        task.reward = f"Complete critical deliverable '{task.title}' and maintain progress streak."
+                        task.loss_if_skipped = f"Delaying this will force '{competing.title if competing else 'subsequent tasks'}' to slide, increasing stress probability."
+                        task.ai_reasoning = (
+                            f"Prioritized '{task.title}' (Panic Score: {task.panic_index}) over "
+                            f"'{competing.title if competing else 'N/A'}' based on remaining time vs estimated effort."
+                        )
+                except Exception as e:
+                    logger.error(f"Prioritization LLM reasoning error: {e}")
+                    task.reward = f"Complete critical deliverable '{task.title}' and maintain progress streak."
+                    task.loss_if_skipped = f"Delaying this will force subsequent tasks to slide, increasing stress probability."
+                    task.ai_reasoning = f"Prioritized '{task.title}' (Panic Score: {task.panic_index}) based on remaining time vs estimated effort."
+
         elif active_tasks:
             task = active_tasks[0]
             task.impact = "High" if task.priority == models.PriorityEnum.URGENT else "Medium"
@@ -215,7 +247,7 @@ class PrioritizationAgent:
         db.commit()
 
 
-# --- 3. SCHEDULER AGENT ---
+# --- 3. SCHEDULER AGENT (LLM scheduling insights) ---
 class SchedulerAgent:
     @staticmethod
     async def run(db: Session):
@@ -250,15 +282,16 @@ class SchedulerAgent:
 
         current_time = start_time
         replan_count = 0
+        total_blocks = 0
 
-        # Read risk config to check if we need emergency scheduling parameters (shorter breaks)
+        # Read risk config to check if we need emergency scheduling parameters
         config = db.query(models.RiskEngineConfig).first()
         critical_threshold = config.threshold_critical if config else 0.40
 
         for task in tasks:
             hours = task.estimated_hours if task.estimated_hours > 0 else 1.0
             
-            # If critical risk, compress break slots (Shorter Pomodoros: 27m focus + 3m break)
+            # If critical risk, compress break slots
             is_critical = task.completion_probability < critical_threshold
             focus_minutes = 27 if is_critical else 25
             break_minutes = 3 if is_critical else 5
@@ -284,7 +317,6 @@ class SchedulerAgent:
                         
                         # Check overlap
                         if (current_time < ev_end) and (block_end > ev_start):
-                            # Conflict detected! Push start time to after event end
                             current_time = ev_end + timedelta(minutes=5)
                             clash = True
                             replan_count += 1
@@ -307,13 +339,38 @@ class SchedulerAgent:
                 )
                 db.add(db_block)
                 current_time += timedelta(minutes=block_total_mins)
+                total_blocks += 1
 
         db.commit()
-        if replan_count > 0:
-            await AgentLogger.log_activity("Scheduler Agent", f"Automatically replanned calendar around {replan_count} external event conflicts.", db)
+
+        # LLM scheduling insight
+        try:
+            conflict_names = [e.title for e in gcal_events]
+            task_names = [t.title for t in tasks[:5]]
+            system_prompt = (
+                "You are the Scheduler Agent. Summarize the scheduling plan you just created in 1-2 sentences. "
+                "Mention how many focus blocks were created, any calendar conflicts detected, and the overall strategy."
+            )
+            user_prompt = (
+                f"Scheduled {total_blocks} Pomodoro focus blocks across {len(tasks)} tasks.\n"
+                f"Calendar conflicts resolved: {replan_count} (Events: {', '.join(conflict_names) if conflict_names else 'None'}).\n"
+                f"Tasks scheduled: {', '.join(task_names)}.\n"
+                f"Work hours: {start_hour}:00 to {end_hour}:00."
+            )
+
+            result = await call_llm_structured(system_prompt, user_prompt, AISchedulerInsight)
+            if result:
+                insight = result.get("scheduling_insight", "")
+                await AgentLogger.log_activity("Scheduler Agent", f"AI Insight: {insight}", db)
+            elif replan_count > 0:
+                await AgentLogger.log_activity("Scheduler Agent", f"Automatically replanned calendar around {replan_count} external event conflicts.", db)
+        except Exception as e:
+            logger.error(f"Scheduler LLM insight error: {e}")
+            if replan_count > 0:
+                await AgentLogger.log_activity("Scheduler Agent", f"Automatically replanned calendar around {replan_count} external event conflicts.", db)
 
 
-# --- 4. AI PREDICTION & RISK FORECASTING ENGINE ---
+# --- 4. AI PREDICTION & RISK FORECASTING ENGINE (LLM prediction narrative) ---
 class AIPredictionEngine:
     @staticmethod
     async def run(task: models.Task, db: Session):
@@ -333,7 +390,6 @@ class AIPredictionEngine:
             return
 
         # Calculate user available hours in the remaining timeframe
-        # Exclude sleep hours (approx 8 hrs per 24 hours)
         sleep_ratio = 8.0 / 24.0
         projected_sleep = total_hours_left * sleep_ratio
 
@@ -348,31 +404,35 @@ class AIPredictionEngine:
         if net_available_hours <= 0:
             net_available_hours = 0.1
 
-        # Check AI Memory for procrastination factor
+        # Check AI Memory for procrastination factor (category-aware)
         delay_coefficient = 1.0
         memory_rec = db.query(models.AIMemory).filter(models.AIMemory.pattern_key == "procrastination_multiplier").first()
         if memory_rec:
             try:
                 data = json.loads(memory_rec.pattern_data)
-                delay_coefficient = data.get("multiplier", 1.2)
+                # Category-aware multiplier
+                category = task.category or "Work"
+                cat_mults = data.get("category_multipliers", {})
+                if category in cat_mults and len(cat_mults[category]) > 0:
+                    delay_coefficient = sum(cat_mults[category]) / len(cat_mults[category])
+                else:
+                    delay_coefficient = data.get("multiplier", 1.2)
             except (json.JSONDecodeError, KeyError, TypeError) as e:
                 logger.error(f"Error parsing procrastination multiplier from memory: {e}")
 
         required_hours = task.estimated_hours * delay_coefficient
 
-        # Probability calculation
+        # Probability calculation (algorithmic core)
         ratio = net_available_hours / required_hours
         if ratio >= 1.2:
             prob = 0.95
         elif ratio <= 0.3:
             prob = 0.10
         else:
-            # Linear scaling
             prob = 0.10 + (ratio - 0.3) * (0.85 / 0.9)
             prob = min(0.95, max(0.05, prob))
 
         # Boost probability based on subtask completion progress (up to +30%)
-        # A task with 80% subtasks done is clearly closer to completion
         if task.subtasks:
             done = sum(1 for s in task.subtasks if s.is_completed)
             subtask_boost = (done / len(task.subtasks)) * 0.30
@@ -381,10 +441,44 @@ class AIPredictionEngine:
         task.completion_probability = round(prob, 2)
         db.commit()
         
-        await AgentLogger.log_activity("AI Prediction Engine", f"Completion probability for '{task.title}' is {int(prob * 100)}% (Net hours: {round(net_available_hours, 1)}h available vs {round(required_hours, 1)}h needed)", db)
+        # LLM prediction narrative
+        try:
+            system_prompt = (
+                "You are the AI Prediction Engine. Explain in 1-2 sentences why this task has the given completion probability. "
+                "Mention specific risk factors like time left, meeting conflicts, procrastination history, or subtask progress."
+            )
+            user_prompt = (
+                f"Task: '{task.title}' (Category: {task.category})\n"
+                f"Completion Probability: {int(prob * 100)}%\n"
+                f"Net available hours: {round(net_available_hours, 1)}h, Required: {round(required_hours, 1)}h\n"
+                f"Meeting conflicts: {round(meeting_hours, 1)}h, Procrastination coefficient: {round(delay_coefficient, 2)}x\n"
+                f"Subtask progress: {sum(1 for s in task.subtasks if s.is_completed)}/{len(task.subtasks)} done" if task.subtasks else ""
+            )
+
+            result = await call_llm_structured(system_prompt, user_prompt, AIPredictionNarrative)
+            if result:
+                narrative = result.get("prediction_narrative", "")
+                await AgentLogger.log_activity(
+                    "AI Prediction Engine",
+                    f"Completion probability for '{task.title}' is {int(prob * 100)}%. {narrative}",
+                    db
+                )
+            else:
+                await AgentLogger.log_activity(
+                    "AI Prediction Engine",
+                    f"Completion probability for '{task.title}' is {int(prob * 100)}% (Net hours: {round(net_available_hours, 1)}h available vs {round(required_hours, 1)}h needed)",
+                    db
+                )
+        except Exception as e:
+            logger.error(f"Prediction LLM narrative error: {e}")
+            await AgentLogger.log_activity(
+                "AI Prediction Engine",
+                f"Completion probability for '{task.title}' is {int(prob * 100)}% (Net hours: {round(net_available_hours, 1)}h available vs {round(required_hours, 1)}h needed)",
+                db
+            )
 
 
-# --- 5. RISK DETECTOR & RECOVERY DISPATCH ---
+# --- 5. RISK DETECTOR & RECOVERY DISPATCH (LLM risk assessment) ---
 class RiskDetector:
     @staticmethod
     async def run(task: models.Task, db: Session):
@@ -397,12 +491,41 @@ class RiskDetector:
 
         prob = task.completion_probability
 
+        # LLM risk assessment
+        risk_level = "safe"
         if prob < critical_thresh:
+            risk_level = "critical"
+        elif prob < warning_thresh:
+            risk_level = "warning"
+
+        try:
+            system_prompt = (
+                "You are the Risk Detector agent. Classify this task's risk level and explain in 1 sentence "
+                "why it's at this risk level. Be specific about the factors (time pressure, probability, priority)."
+            )
+            user_prompt = (
+                f"Task: '{task.title}'\n"
+                f"Completion Probability: {int(prob * 100)}%\n"
+                f"Panic Index: {task.panic_index}\n"
+                f"Priority: {task.priority.value}\n"
+                f"Risk Level: {risk_level.upper()}\n"
+                f"Thresholds: Critical < {int(critical_thresh * 100)}%, Warning < {int(warning_thresh * 100)}%"
+            )
+
+            result = await call_llm_structured(system_prompt, user_prompt, AIRiskAssessment)
+            if result:
+                assessment = result.get("risk_assessment", "")
+                await AgentLogger.log_activity("Risk Detector", f"Assessment for '{task.title}': {assessment}", db)
+        except Exception as e:
+            logger.error(f"Risk Detector LLM error: {e}")
+
+        # Dispatch based on risk level
+        if risk_level == "critical":
             await AgentLogger.log_activity("Risk Detector", f"⚠️ CRITICAL RISK detected for '{task.title}'! Activating emergency rescue and negotiations.", db)
             await RescueAgent.run(task, db)
             await NegotiationAgent.run(task, db)
             await MotivationAgent.trigger_alert(task, "critical", db)
-        elif prob < warning_thresh:
+        elif risk_level == "warning":
             await AgentLogger.log_activity("Risk Detector", f"⚠️ WARNING state detected for '{task.title}'. Restructuring subtask priorities.", db)
             await RescueAgent.run(task, db)
             await MotivationAgent.trigger_alert(task, "warning", db)
@@ -413,30 +536,39 @@ class RiskDetector:
             db.commit()
 
 
-# --- 6. RESCUE AGENT ---
+# --- 6. RESCUE AGENT (LLM-powered with structured output) ---
 class RescueAgent:
     @staticmethod
     async def run(task: models.Task, db: Session, force: bool = False):
         if not force and task.rescue_strategy:
-            # Plan already formulated, do not recreate
             return
 
         await AgentLogger.log_activity("Rescue Agent", f"Formulating Emergency Recovery Plan for '{task.title}'", db)
 
-        # Gather task details
         system_prompt = (
             "You are the Emergency Rescue Agent. Formulate an action strategy for a task at risk of missing its deadline. "
             "Suggest how to prune scope, focus on minimum viable deliverables, and list a chronological micro-timeline. "
-            "Return ONLY a JSON object containing: "
-            "1. 'rescue_strategy' (string text explaining how to save the deadline) "
-            "2. 'critical_next_action' (string detailing the single next vital step) "
-            "3. 'timeline' (list of objects with 'time' (string, e.g. '6:30 PM') and 'title' (string task milestone))"
+            "The rescue_strategy should be a concise 2-3 sentence recovery plan. "
+            "The critical_next_action should be the single most important step to do right now. "
+            "The timeline should have 3-5 milestones with realistic times."
         )
         
         now_str = datetime.datetime.now(timezone.utc).strftime("%I:%M %p")
         user_prompt = f"Task: {task.title}\nDue: {task.due_date}\nProbability: {task.completion_probability}\nNow is: {now_str}"
         
         try:
+            # Try Gemini Structured Outputs
+            result = await call_llm_structured(system_prompt, user_prompt, AIRescueResponse)
+            
+            if result:
+                task.rescue_strategy = result.get("rescue_strategy")
+                task.critical_next_action = result.get("critical_next_action")
+                task.rescue_timeline = json.dumps(result.get("timeline", []))
+                db.commit()
+                await AgentLogger.log_activity("Rescue Agent", f"AI Recovery Plan written for '{task.title}'", db)
+                return
+
+            # Fallback: legacy call
             res = await call_llm(system_prompt, user_prompt, json_mode=True)
             cleaned = clean_json_text(res)
             data = json.loads(cleaned)
@@ -444,8 +576,6 @@ class RescueAgent:
             task.rescue_strategy = data.get("rescue_strategy")
             task.critical_next_action = data.get("critical_next_action")
             task.rescue_timeline = json.dumps(data.get("timeline", []))
-            
-            # Shorten/prioritize remaining subtasks in database
             db.commit()
             await AgentLogger.log_activity("Rescue Agent", f"Recovery Plan written for '{task.title}'", db)
         except Exception as e:
@@ -454,7 +584,6 @@ class RescueAgent:
             task.rescue_strategy = "Focus strictly on the minimum core requirements. Postpone formatting, polish, and documentation until after completion."
             task.critical_next_action = "Draft the core skeleton structure and submit initial placeholder blocks."
             
-            # Simple timeline
             timeline = [
                 {"time": "Start + 15m", "title": "Setup core skeleton structure", "completed": False},
                 {"time": "Start + 45m", "title": "Write primary functional logic", "completed": False},
@@ -464,17 +593,15 @@ class RescueAgent:
             db.commit()
 
 
-# --- 7. NEGOTIATION AGENT ---
+# --- 7. NEGOTIATION AGENT (LLM-powered with structured output) ---
 class NegotiationAgent:
     @staticmethod
     async def run(task: models.Task, db: Session, force: bool = False):
         if not force:
-            # Check if draft already exists to avoid duplication
             existing = db.query(models.EmailDraft).filter(
                 models.EmailDraft.task_id == task.id,
                 models.EmailDraft.status == "Draft"
             ).first()
-
             if existing:
                 return
 
@@ -482,19 +609,38 @@ class NegotiationAgent:
 
         system_prompt = (
             "You are the Negotiation Agent. Draft a professional, polite, and persuasive request for a deadline extension or meeting reschedule. "
-            "Return ONLY a JSON object containing: "
-            "1. 'recipient' (string, e.g. 'professor@university.edu', 'manager@company.com') "
-            "2. 'subject' (string email subject) "
-            "3. 'body' (string email body text with placeholders)"
+            "Include a realistic recipient email, a clear subject line, and a body with placeholders for names."
         )
         user_prompt = f"Task: {task.title}\nDue: {task.due_date}\nProbability: {task.completion_probability}"
 
         try:
+            # Try Gemini Structured Outputs
+            result = await call_llm_structured(system_prompt, user_prompt, AINegotiationResponse)
+            
+            if result:
+                if force:
+                    db.query(models.EmailDraft).filter(
+                        models.EmailDraft.task_id == task.id,
+                        models.EmailDraft.status == "Draft"
+                    ).delete()
+
+                draft = models.EmailDraft(
+                    task_id=task.id,
+                    recipient=result.get("recipient", "stakeholder@organization.com"),
+                    subject=result.get("subject", f"Extension Request: {task.title}"),
+                    body=result.get("body", "Dear recipient,\n\nI am writing to request a brief extension..."),
+                    status="Draft"
+                )
+                db.add(draft)
+                db.commit()
+                await AgentLogger.log_activity("Negotiation Agent", f"Saved AI-generated extension draft for '{task.title}' in the Negotiation Center.", db)
+                return
+
+            # Fallback: legacy call
             res = await call_llm(system_prompt, user_prompt, json_mode=True)
             cleaned = clean_json_text(res)
             data = json.loads(cleaned)
 
-            # Delete any existing draft before creating the new one if forcing
             if force:
                 db.query(models.EmailDraft).filter(
                     models.EmailDraft.task_id == task.id,
@@ -513,7 +659,6 @@ class NegotiationAgent:
             await AgentLogger.log_activity("Negotiation Agent", f"Saved extension draft for '{task.title}' in the Negotiation Center.", db)
         except Exception as e:
             logger.error(f"Negotiation Agent error: {e}")
-            # Fallback
             if force:
                 db.query(models.EmailDraft).filter(
                     models.EmailDraft.task_id == task.id,
@@ -530,18 +675,42 @@ class NegotiationAgent:
             db.commit()
 
 
-# --- 8. MOTIVATION AGENT ---
+# --- 8. MOTIVATION AGENT (LLM-powered personalized messages) ---
 class MotivationAgent:
     @staticmethod
     async def trigger_alert(task: models.Task, level: str, db: Session):
         """
-        Pushes a smart notification on state shifts.
+        Pushes a smart notification on state shifts — now with LLM-personalized messages.
         """
         msg = ""
-        if level == "critical":
-            msg = f"🚨 Action Needed: '{task.title}' completion probability is {int(task.completion_probability*100)}%. We drafted an extension email and activated emergency micro-schedules."
-        else:
-            msg = f"⚠️ Shift Alert: '{task.title}' is slipping. Starting Pomodoros now will guarantee submission."
+
+        # Try LLM-generated motivational message
+        try:
+            system_prompt = (
+                "You are the Motivation Agent in a productivity tool. Generate a single empathetic, action-oriented "
+                "motivational notification message for the user. Be specific to their task and situation. "
+                "Include an emoji at the start. Keep it under 2 sentences."
+            )
+            user_prompt = (
+                f"Task: '{task.title}'\n"
+                f"Risk Level: {level}\n"
+                f"Completion Probability: {int(task.completion_probability * 100)}%\n"
+                f"Panic Index: {task.panic_index}\n"
+                f"Category: {task.category}"
+            )
+
+            result = await call_llm_structured(system_prompt, user_prompt, AIMotivationMessage)
+            if result:
+                msg = result.get("message", "")
+        except Exception as e:
+            logger.error(f"Motivation Agent LLM error: {e}")
+
+        # Fallback if LLM didn't produce a message
+        if not msg:
+            if level == "critical":
+                msg = f"🚨 Action Needed: '{task.title}' completion probability is {int(task.completion_probability*100)}%. We drafted an extension email and activated emergency micro-schedules."
+            else:
+                msg = f"⚠️ Shift Alert: '{task.title}' is slipping. Starting Pomodoros now will guarantee submission."
 
         # Add notification
         notif = models.Notification(
@@ -551,29 +720,31 @@ class MotivationAgent:
         )
         db.add(notif)
         db.commit()
-        await AgentLogger.log_activity("Motivation Agent", f"Dispatched smart notification alert: {msg[:60]}...", db)
+        await AgentLogger.log_activity("Motivation Agent", f"Dispatched AI-personalized notification: {msg[:80]}...", db)
 
 
-# --- 9. REFLECTION AGENT (Self-Improving AI) ---
+# --- 9. REFLECTION AGENT (Self-Improving AI with LLM insights) ---
 class ReflectionAgent:
     @staticmethod
     async def run(task: models.Task, db: Session):
         await AgentLogger.log_activity("Reflection Agent", f"Analyzing completion metrics for '{task.title}'", db)
 
-        # Check estimate vs actual duration based on actual focus hours logged, or default to estimate
+        # Check estimate vs actual duration
         actual_hours = task.actual_hours_spent
         if actual_hours <= 0.0:
             actual_hours = task.estimated_hours if task.estimated_hours > 0 else 0.5
 
         estimated = task.estimated_hours if task.estimated_hours > 0 else 0.5
+        ratio = actual_hours / estimated
+        category = task.category or "Work"
 
-        # Update procrastination multiplier pattern in AIMemory
+        # Update procrastination multiplier pattern in AIMemory (category-aware)
         memory_rec = db.query(models.AIMemory).filter(models.AIMemory.pattern_key == "procrastination_multiplier").first()
         if not memory_rec:
             memory_rec = models.AIMemory(
                 category="procrastination",
                 pattern_key="procrastination_multiplier",
-                pattern_data=json.dumps({"multiplier": 1.0, "completed_tasks_count": 0, "history": []})
+                pattern_data=json.dumps({"multiplier": 1.0, "completed_tasks_count": 0, "history": [], "category_multipliers": {}})
             )
             db.add(memory_rec)
             db.commit()
@@ -582,30 +753,71 @@ class ReflectionAgent:
             data = json.loads(memory_rec.pattern_data)
             history = data.get("history", [])
             count = data.get("completed_tasks_count", 0) + 1
+            cat_mults = data.get("category_multipliers", {})
 
-            # Procrastination ratio: actual time vs estimated time
-            ratio = actual_hours / estimated
+            # Global history
             history.append(ratio)
-            # Limit history
             if len(history) > 10:
                 history.pop(0)
 
-            # Average multiplier
+            # Category-specific history
+            if category not in cat_mults:
+                cat_mults[category] = []
+            cat_mults[category].append(ratio)
+            if len(cat_mults[category]) > 10:
+                cat_mults[category].pop(0)
+
+            # Average multiplier (global)
             avg_mult = sum(history) / len(history)
-            # Clip between 0.8 and 2.0 to avoid extreme prediction skewing
             avg_mult = min(2.0, max(0.8, avg_mult))
 
             data["multiplier"] = round(avg_mult, 2)
             data["completed_tasks_count"] = count
             data["history"] = history
+            data["category_multipliers"] = cat_mults
 
             memory_rec.pattern_data = json.dumps(data)
             db.commit()
 
-            await AgentLogger.log_activity(
-                "Reflection Agent", 
-                f"Successfully calculated multiplier factor: {round(ratio, 2)}x. Total memory dataset: {count} tasks. Adjusted coefficient to {round(avg_mult, 2)}x.", 
-                db
-            )
+            # LLM reflection insight
+            try:
+                cat_avg = sum(cat_mults[category]) / len(cat_mults[category]) if cat_mults.get(category) else 1.0
+                system_prompt = (
+                    "You are the Reflection Agent in a self-improving productivity system. Analyze the user's task completion pattern "
+                    "and generate a brief insight about their work habits. Suggest a procrastination multiplier adjustment. "
+                    "Be encouraging but honest. Keep the insight under 2 sentences."
+                )
+                user_prompt = (
+                    f"Task completed: '{task.title}' (Category: {category})\n"
+                    f"Estimated: {estimated}h, Actual: {actual_hours}h (Ratio: {round(ratio, 2)}x)\n"
+                    f"Global procrastination multiplier: {round(avg_mult, 2)}x\n"
+                    f"Category '{category}' average ratio: {round(cat_avg, 2)}x\n"
+                    f"Total tasks analyzed: {count}"
+                )
+
+                result = await call_llm_structured(system_prompt, user_prompt, AIReflectionInsight)
+                if result:
+                    insight = result.get("insight", "")
+                    suggested_mult = result.get("adjusted_multiplier_suggestion", avg_mult)
+                    suggested_mult = min(2.0, max(0.8, suggested_mult))
+                    
+                    await AgentLogger.log_activity(
+                        "Reflection Agent",
+                        f"AI Insight: {insight} (Suggested multiplier: {round(suggested_mult, 2)}x)",
+                        db
+                    )
+                else:
+                    await AgentLogger.log_activity(
+                        "Reflection Agent",
+                        f"Calculated multiplier factor: {round(ratio, 2)}x. Total memory dataset: {count} tasks. Adjusted coefficient to {round(avg_mult, 2)}x.",
+                        db
+                    )
+            except Exception as e:
+                logger.error(f"Reflection LLM insight error: {e}")
+                await AgentLogger.log_activity(
+                    "Reflection Agent",
+                    f"Calculated multiplier factor: {round(ratio, 2)}x. Total memory dataset: {count} tasks. Adjusted coefficient to {round(avg_mult, 2)}x.",
+                    db
+                )
         except Exception as e:
             logger.error(f"Reflection Agent error: {e}")

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base, SessionLocal
-from app.routes import tasks, habits, schedule, ai, negotiation, demo
+from app.routes import tasks, habits, schedule, ai, negotiation, demo, oauth
 from app.config import settings
 from sqlalchemy import inspect, text
 from app import models
@@ -136,15 +136,20 @@ app.include_router(schedule.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(negotiation.router, prefix="/api")
 app.include_router(demo.router, prefix="/api")
+app.include_router(oauth.router, prefix="/api")
 
 
 @app.get("/api/health")
 def health_check():
+    from app.google_services import is_google_oauth_configured
     return {
         "status": "healthy",
         "autonomous_scheduler": "running" if (HAS_APSCHEDULER and scheduler and scheduler.running) else "disabled/unsupported",
         "api_keys_loaded": {
             "gemini": bool(settings.GEMINI_API_KEY),
             "groq": bool(settings.GROQ_API_KEY)
-        }
+        },
+        "google_oauth_ready": is_google_oauth_configured(),
+        "llm_structured_outputs": True,
+        "agents_with_llm": 9
     }
